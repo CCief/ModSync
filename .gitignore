@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+out/
+bin/
+
+# Loom / run dirs
+run/
+.run/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+
+# Java
+*.class
+hs_err_pid*
+replay_pid*
+
+# OS
+.DS_Store
+Thumbs.db
