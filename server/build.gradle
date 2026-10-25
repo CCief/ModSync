@@ -18,6 +18,15 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
+// 两端共享的协议源码直接编进本 jar（不是 jar 依赖 —— 那样运行期会找不到类）
+sourceSets {
+    main {
+        java {
+            srcDir '../common/src/main/java'
+        }
+    }
+}
+
 repositories {
     mavenCentral()
     maven { url = 'https://maven.fabricmc.net' }
@@ -28,7 +37,6 @@ dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    implementation project(':common')
 }
 
 processResources {

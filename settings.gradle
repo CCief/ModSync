@@ -8,6 +8,9 @@ pluginManagement {
 
 rootProject.name = 'modsync'
 
-include 'common'
+// common/ 不是独立模块，只是「两端共享的源码目录」——由 server 与 client 各自
+// 通过 sourceSets.srcDir 引用并编进自己的 jar（Fabric 的 mod jar 必须是自带依赖的
+// 胖 jar，Gradle 的 implementation project(...) 只在编译期可见，运行期会
+// NoClassDefFoundError，所以不能用 jar 依赖的方式共享）。
 include 'server'
 include 'client'
