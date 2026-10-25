@@ -93,8 +93,6 @@ mod 清单由服务端说了算。玩家进服时，服务端下发权威清单�
   "checkUrl": "",
   "kickOnMissing": false,
   "kickMessage": "你的客户端缺少同步组件，无法自动获取服务器 mod。请安装整合包后重试。",
-  "requireFabric": true,
-  "requiredChannels": []
 }
 ```
 
@@ -105,8 +103,6 @@ mod 清单由服务端说了算。玩家进服时，服务端下发权威清单�
 | `checkUrl` | `""` | 没装助手的玩家去哪里下载整合包 |
 | `kickOnMissing` | `false` | `true` = 踢出没装助手的玩家；`false` = 放行并提示 |
 | `kickMessage` | *(中文文案)* | 踢出时显示的文案（支持 `§` 颜色码） |
-| `requireFabric` | `true` | 要求客户端是装了 fabric-api 的 Fabric 客户端（依据 `fabric:registry/sync`） |
-| `requiredChannels` | `[]` | 额外要求客户端注册的通道，缺一个即视为少对应 mod |
 
 ---
 

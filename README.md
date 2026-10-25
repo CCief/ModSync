@@ -99,8 +99,6 @@ Generated at `config/modsync.json` on first launch:
   "checkUrl": "",
   "kickOnMissing": false,
   "kickMessage": "你的客户端缺少同步组件，无法自动获取服务器 mod。请安装整合包后重试。",
-  "requireFabric": true,
-  "requiredChannels": []
 }
 ```
 
@@ -111,8 +109,6 @@ Generated at `config/modsync.json` on first launch:
 | `checkUrl` | `""` | Where players without the helper should download the pack |
 | `kickOnMissing` | `false` | `true` = disconnect players without the helper; `false` = allow in and show a notice |
 | `kickMessage` | *(Chinese text)* | Message shown when kicking (supports `§` color codes) |
-| `requireFabric` | `true` | Require a Fabric client with fabric-api (detected via `fabric:registry/sync`) |
-| `requiredChannels` | `[]` | Extra channels the client must have registered; each missing one is reported as a missing mod |
 
 ---
 

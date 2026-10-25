@@ -5,7 +5,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import modsync.common.ModPayloads;
 import modsync.common.Util;
-import net.fabricmc.api.EnvType;
 import net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -17,7 +16,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 
-import java.io.ByteArrayOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -26,16 +24,20 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 服务端逻辑：
+ * 服务端逻辑，就三件事：
  *
- * 1) CONFIGURE 阶段读客户端注册的通道集合，判断客户端是否装了 modsync-client：
- *      - 有 modsync:probe  → 客户端带自动下载组件 → 进服后自动推送清单
- *      - 没有              → 按 config 提示下载 / 踢出
- *    同时校验 fabric:registry/sync（是不是 Fabric 客户端）与 requiredChannels（额外的 mod 检查）。
+ *  1. 认人   —— CONFIGURE 阶段看客户端有没有注册 modsync:probe 通道。
+ *                有 → 这台客户端能自动收，进 PLAY 阶段全自动化。
+ *                无 → 这台客户端收不了（没装组件，或压根不是 Fabric 客户端），
+ *                     按配置提示下载整合包或直接踢出。
  *
- * 2) PLAY 阶段 JOIN：给装了组件的客户端下发权威 mod 清单（sha256 列表）。
+ *  2. 下清单 —— 玩家进服时，把服务端 mods/ 目录的权威清单（文件名+sha256+大小）发下去。
+ *                **服务端不判断"玩家缺什么"** —— 那是客户端自己的活：它比对本地 mods/ 后
+ *                才知道自己缺什么（包括 fabric-api 这种"引导依赖"，缺了也会被自动补上）。
  *
- * 3) 收到客户端的 ModRequest → 逐个文件推送（FileMeta → FileChunk* → FileEnd）。
+ *  3. 推文件 —— 客户端报出它需要的名单，服务端逐个把字节推过去。
+ *
+ * 传输全部走 Minecraft 自己的连接（server-port=25565），frp / NAT / 内网穿透自动透传。
  */
 public final class ServerSync {
     private ServerSync() {}
@@ -43,54 +45,40 @@ public final class ServerSync {
     private static final Gson GSON = new Gson();
     private static final Path MODS_DIR = FabricLoader.getInstance().getGameDir().resolve("mods");
 
-    /** 客户端组件注册的探针通道。 */
+    /** 客户端组件注册的探针通道 —— 有它就说明这台客户端具备自动接收能力。 */
     static final Identifier PROBE_CHANNEL = Identifier.fromNamespaceAndPath("modsync", "probe");
-    /** Fabric 客户端（含 fabric-api）必然注册的通道。 */
-    static final Identifier FABRIC_REGISTRY_SYNC = Identifier.fromNamespaceAndPath("fabric", "registry/sync");
 
-    /** 装了组件、等待接收清单的玩家。 */
-    static final Set<String> syncReady = ConcurrentHashMap.newKeySet();
-    /** 没装组件、待提示的玩家。 */
+    /** 能自动收的客户端（按玩家名记）。 */
+    static final Set<String> autoCapable = ConcurrentHashMap.newKeySet();
+    /** 收不了的客户端，待提示。 */
     static final Set<String> pendingNotice = ConcurrentHashMap.newKeySet();
-    static final java.util.Map<String, List<String>> pendingMissing = new ConcurrentHashMap<>();
 
     public static void init() {
-        if (FabricLoader.getInstance().getEnvironmentType() != EnvType.SERVER) {
-            log("本 mod 仅服务端生效，客户端环境已跳过。");
-            return;
-        }
-
-        // 客户端组件会回一个 ModRequest；同时它注册了 modsync:probe 通道
+        // 客户端组件发来的"我需要这些"请求
         ServerPlayNetworking.registerGlobalReceiver(ModPayloads.ModRequest.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> handleRequest(ctx.player(), payload)));
 
+        // 配置阶段：认人
         ServerConfigurationConnectionEvents.CONFIGURE.register(ServerSync::onConfigure);
 
+        // 进世界：下清单
         ServerPlayConnectionEvents.JOIN.register((ServerGamePacketListenerImpl handler,
                                                   net.fabricmc.fabric.api.networking.v1.PacketSender sender,
                                                   net.minecraft.server.MinecraftServer server) -> {
             ServerPlayer player = handler.getPlayer();
             String name = player.getGameProfile().name();
-            if (pendingNotice.remove(name)) {
-                sendNotice(player, pendingMissing.remove(name));
-            } else if (syncReady.contains(name)) {
+            if (autoCapable.contains(name)) {
                 sendManifest(player);
+            } else if (pendingNotice.remove(name)) {
+                sendNotice(player);
             }
         });
     }
 
-    // ───────────────────────── 配置阶段：探测客户端能力 ─────────────────────────
+    // ───────────────────────── 1. 认人 ─────────────────────────
 
     private static void onConfigure(ServerConfigurationPacketListenerImpl listener,
                                     net.minecraft.server.MinecraftServer server) {
-        Set<Identifier> channels;
-        try {
-            channels = ServerConfigurationNetworking.getReceived(listener);
-        } catch (Exception e) {
-            e.printStackTrace();
-            channels = null;
-        }
-
         String name;
         try {
             name = listener.getOwner().name();
@@ -98,62 +86,32 @@ public final class ServerSync {
             name = "?";
         }
 
-        List<String> missing = new ArrayList<>();
-        boolean hasClient = false;
-
-        if (channels == null) {
-            missing.add("无法读取客户端通道信息");
-        } else {
-            hasClient = channels.contains(PROBE_CHANNEL);
-            if (Config.INSTANCE.requireFabric && !channels.contains(FABRIC_REGISTRY_SYNC)) {
-                missing.add("fabric-api (未检测到 Fabric 客户端)");
-            }
-            for (String raw : Config.INSTANCE.requiredChannels) {
-                if (raw == null || raw.isBlank()) continue;
-                Identifier id = parseChannel(raw);
-                if (id == null) {
-                    log("requiredChannels 里的 \"" + raw + "\" 不是合法通道标识，已跳过");
-                    continue;
-                }
-                if (!channels.contains(id)) missing.add(raw);
-            }
+        boolean canAuto;
+        try {
+            Set<Identifier> channels = ServerConfigurationNetworking.getReceived(listener);
+            canAuto = channels != null && channels.contains(PROBE_CHANNEL);
+        } catch (Exception e) {
+            e.printStackTrace();
+            canAuto = false;
         }
 
-        if (!hasClient) {
-            missing.add("modsync-client (自动同步组件)");
-        }
-
-        if (missing.isEmpty()) {
-            syncReady.add(name);
-            log("玩家 " + name + " 检测通过，准备推送 mod 清单。");
+        if (canAuto) {
+            autoCapable.add(name);
+            log("玩家 " + name + " 已安装同步组件，全程自动同步。");
             return;
         }
 
+        log("玩家 " + name + " 无法自动同步（没有同步组件，或不是 Fabric 客户端）。");
         if (Config.INSTANCE.kickOnMissing) {
-            listener.disconnect(Component.literal(buildKickMessage(missing)));
-            log("已断开缺少组件的玩家: " + name + " -> " + missing);
+            listener.disconnect(Component.literal(Config.INSTANCE.kickMessage));
         } else {
-            log("玩家 " + name + " 缺少: " + missing + "（已放行，进入后提示）");
             pendingNotice.add(name);
-            pendingMissing.put(name, missing);
         }
     }
 
-    private static Identifier parseChannel(String raw) {
-        try {
-            if (raw.contains(":")) {
-                int i = raw.indexOf(':');
-                return Identifier.fromNamespaceAndPath(raw.substring(0, i), raw.substring(i + 1));
-            }
-            return Identifier.fromNamespaceAndPath("minecraft", raw);
-        } catch (Exception e) {
-            return null;
-        }
-    }
+    // ───────────────────────── 2. 下清单 ─────────────────────────
 
-    // ───────────────────────── 清单下发 ─────────────────────────
-
-    /** 扫描服务端 mods/ 目录，生成权威清单（排除 serverOnly 与 modsync 自身）。 */
+    /** 服务端 mods/ 目录 = 权威清单（排除仅服务端 mod 与同步组件自身）。 */
     static void sendManifest(ServerPlayer player) {
         try {
             JsonArray arr = new JsonArray();
@@ -163,8 +121,8 @@ public final class ServerSync {
                         if (!Files.isRegularFile(p)) continue;
                         String name = p.getFileName().toString();
                         if (!name.endsWith(".jar")) continue;
-                        if (name.startsWith("modsync")) continue;           // 同步组件自身不下发
-                        if (Config.INSTANCE.serverOnly.contains(name)) continue;
+                        if (name.startsWith("modsync")) continue;                    // 同步组件自身不下发
+                        if (Config.INSTANCE.serverOnly.contains(name)) continue;     // 仅服务端 mod 不下发
                         JsonObject o = new JsonObject();
                         o.addProperty("name", name);
                         o.addProperty("sha", Util.sha256(p));
@@ -181,13 +139,13 @@ public final class ServerSync {
                 byte[] c = java.util.Arrays.copyOfRange(data, i * chunk, i * chunk + len);
                 ServerPlayNetworking.send(player, new ModPayloads.ManifestChunk(i, total, c));
             }
-            log("已向 " + player.getGameProfile().name() + " 下发清单，共 " + arr.size() + " 个 mod。");
+            log("已向 " + player.getGameProfile().name() + " 下发清单：" + arr.size() + " 个 mod");
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    // ───────────────────────── 文件推送 ─────────────────────────
+    // ───────────────────────── 3. 推文件 ─────────────────────────
 
     static void handleRequest(ServerPlayer player, ModPayloads.ModRequest payload) {
         List<String> wanted = new ArrayList<>();
@@ -199,6 +157,7 @@ public final class ServerSync {
             e.printStackTrace();
             return;
         }
+        log("玩家 " + player.getGameProfile().name() + " 请求 " + wanted.size() + " 个 mod");
         for (String name : wanted) streamFile(player, name);
     }
 
@@ -231,24 +190,16 @@ public final class ServerSync {
 
     // ───────────────────────── 提示 ─────────────────────────
 
-    private static String buildKickMessage(List<String> missing) {
-        StringBuilder sb = new StringBuilder(Config.INSTANCE.kickMessage);
-        sb.append("\n\n缺失: ").append(String.join(", ", missing));
-        String url = Config.INSTANCE.checkUrl;
-        if (url != null && !url.isBlank()) sb.append("\n下载地址: ").append(url);
-        return sb.toString();
-    }
-
-    private static void sendNotice(ServerPlayer player, List<String> missing) {
+    private static void sendNotice(ServerPlayer player) {
         player.sendSystemMessage(Component.literal(
-                "§6[ModSync]§r 检测到你的客户端缺少必需组件：§c" + String.join("§c, §c", missing)));
+                "§6[ModSync]§r 这台客户端还不能自动获取服务器 mod。"));
         String url = Config.INSTANCE.checkUrl;
         if (url != null && !url.isBlank()) {
             player.sendSystemMessage(Component.literal(
-                    "§e请从这里下载整合包，安装后重启游戏再进来: §b§n" + url));
+                    "§e请下载整合包并安装后重进: §b§n" + url));
         } else {
             player.sendSystemMessage(Component.literal(
-                    "§e请在服务器公告/群内获取整合包下载地址，安装后重启游戏再进来。"));
+                    "§e请向服主索取整合包，安装后重进。"));
         }
     }
 

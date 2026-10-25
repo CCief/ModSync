@@ -14,22 +14,18 @@ import java.util.List;
 /**
  * 服务端配置：config/modsync.json（首次启动自动生成）。
  *
- * serverOnly      : 仅服务端运行的 mod 文件名，不下发给客户端（如 carpet、lithium）。
- * chunkSize       : 单个网络包字节数（默认 30KB，远小于 MC 自定义载荷上限）。
- * checkUrl        : 客户端没装 modsync-client 时，提示去哪里下载整合包。
- * kickOnMissing   : 客户端没装 modsync-client 时是否直接踢出。
- * kickMessage     : 踢出文案。
- * requireFabric   : 要求客户端是装了 fabric-api 的 Fabric 客户端。
- * requiredChannels: 客户端必须注册的通道（额外校验用，缺一个即视为少对应 mod）。
+ * serverOnly    : 仅服务端运行的 mod 文件名，不下发给客户端（如 carpet、lithium）。
+ * chunkSize     : 单个网络包字节数（默认 30KB）。
+ * checkUrl      : 客户端没法自动收（没装组件 / 不是 Fabric 客户端）时，提示去哪里下载整合包。
+ * kickOnMissing : 上述情况下是否直接踢出（false = 只提示，允许进入）。
+ * kickMessage   : 踢出文案。
  */
 public class Config {
     public List<String> serverOnly = new ArrayList<>();
     public int chunkSize = 30720;
     public String checkUrl = "";
     public boolean kickOnMissing = false;
-    public String kickMessage = "你的客户端缺少同步组件，无法自动获取服务器 mod。请安装整合包后重试。";
-    public boolean requireFabric = true;
-    public List<String> requiredChannels = new ArrayList<>();
+    public String kickMessage = "请先安装整合包（fabric-api + modsync-client）后再进入。";
 
     public static Config INSTANCE = new Config();
 
@@ -53,7 +49,6 @@ public class Config {
             }
         }
         if (INSTANCE.serverOnly == null) INSTANCE.serverOnly = new ArrayList<>();
-        if (INSTANCE.requiredChannels == null) INSTANCE.requiredChannels = new ArrayList<>();
         if (INSTANCE.chunkSize <= 0) INSTANCE.chunkSize = 30720;
     }
 }
