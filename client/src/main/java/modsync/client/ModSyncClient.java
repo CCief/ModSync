@@ -1,7 +1,6 @@
 package modsync.client;
 
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationNetworking;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import modsync.common.ModPayloads;
@@ -24,11 +23,11 @@ public class ModSyncClient implements ClientModInitializer {
         PayloadTypeRegistry.clientboundPlay().register(ModPayloads.FileEnd.TYPE, ModPayloads.FileEnd.CODEC);
         PayloadTypeRegistry.serverboundPlay().register(ModPayloads.ModRequest.TYPE, ModPayloads.ModRequest.CODEC);
 
-        // ★ 配置阶段探针：注册后服务端在 CONFIGURE 阶段就能看到本客户端具备自动同步能力。
-        //   必须走 configuration 阶段 —— play 阶段的通道那时还没协商，服务端看不到。
-        PayloadTypeRegistry.clientboundConfiguration().register(ModPayloads.Probe.TYPE, ModPayloads.Probe.CODEC);
-        PayloadTypeRegistry.serverboundConfiguration().register(ModPayloads.Probe.TYPE, ModPayloads.Probe.CODEC);
-        ClientConfigurationNetworking.registerGlobalReceiver(ModPayloads.Probe.TYPE, (payload, ctx) -> { });
+        // ★ 探针：注册在 PLAY 阶段。服务端在玩家进世界（JOIN）时读 play 阶段的通道集合，
+        //   那时通道协商一定已经完成；配置阶段过早，看到的集合是空的。
+        PayloadTypeRegistry.clientboundPlay().register(ModPayloads.Probe.TYPE, ModPayloads.Probe.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(ModPayloads.Probe.TYPE, ModPayloads.Probe.CODEC);
+        ClientPlayNetworking.registerGlobalReceiver(ModPayloads.Probe.TYPE, (payload, ctx) -> { });
 
         ClientSync.init();
     }

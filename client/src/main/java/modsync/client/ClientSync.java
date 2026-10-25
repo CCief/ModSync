@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import modsync.common.ModPayloads;
 import modsync.common.Util;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
@@ -48,6 +49,17 @@ public class ClientSync {
     }
 
     public static void init() {
+        // ★ 进服时主动向服务端打招呼：告诉它"这台客户端能自动收"。
+        //   服务端据此才下发清单 —— 比让服务端去猜通道集合更可靠。
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            try {
+                ClientPlayNetworking.send(new ModPayloads.Probe());
+                System.out.println("[ModSync] 已向服务端报到（具备自动同步能力）。");
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+
         // 重启后提示玩家重新连接：启动时若发现标记文件，记下地址，等进世界后提示
         try {
             String target = Restart.readReconnectTarget();

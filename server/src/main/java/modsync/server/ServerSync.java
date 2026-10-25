@@ -5,21 +5,20 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import modsync.common.ModPayloads;
 import modsync.common.Util;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerConfigurationNetworking;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.network.ServerConfigurationPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -50,63 +49,100 @@ public final class ServerSync {
 
     /** 能自动收的客户端（按玩家名记）。 */
     static final Set<String> autoCapable = ConcurrentHashMap.newKeySet();
-    /** 收不了的客户端，待提示。 */
-    static final Set<String> pendingNotice = ConcurrentHashMap.newKeySet();
 
     public static void init() {
         // 客户端组件发来的"我需要这些"请求
         ServerPlayNetworking.registerGlobalReceiver(ModPayloads.ModRequest.TYPE, (payload, ctx) ->
                 ctx.server().execute(() -> handleRequest(ctx.player(), payload)));
 
-        // 配置阶段：认人
-        ServerConfigurationConnectionEvents.CONFIGURE.register(ServerSync::onConfigure);
+        // ★ 客户端组件进服时的报到：收到就说明它能自动收 → 立刻下发清单
+        ServerPlayNetworking.registerGlobalReceiver(ModPayloads.Probe.TYPE, (payload, ctx) ->
+                ctx.server().execute(() -> onClientReady(ctx.player())));
 
-        // 进世界：下清单
+        // 每 tick 推进「等待组件报到」的判定
+        ServerTickEvents.END_SERVER_TICK.register(server -> tickChecks());
+
+        // 记录在线玩家，供判定时取用
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            ServerPlayer p = handler.getPlayer();
+            onlinePlayers.put(p.getGameProfile().name(), p);
+        });
+        ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
+            String n = handler.getPlayer().getGameProfile().name();
+            onlinePlayers.remove(n);
+            pendingCheck.remove(n);
+            autoCapable.remove(n);
+        });
+
+        // 进世界：先看通道集合里有没有探针（快路径），没有就等一会儿再判定
         ServerPlayConnectionEvents.JOIN.register((ServerGamePacketListenerImpl handler,
                                                   net.fabricmc.fabric.api.networking.v1.PacketSender sender,
                                                   net.minecraft.server.MinecraftServer server) -> {
             ServerPlayer player = handler.getPlayer();
             String name = player.getGameProfile().name();
-            if (autoCapable.contains(name)) {
-                sendManifest(player);
-            } else if (pendingNotice.remove(name)) {
-                sendNotice(player);
+
+            // 快路径：play 阶段的通道协商此时已完成，客户端若装了组件一定能看到探针
+            boolean hasProbe = false;
+            try {
+                Set<Identifier> channels = ServerPlayNetworking.getReceived(player);
+                hasProbe = channels != null && channels.contains(PROBE_CHANNEL);
+            } catch (Exception e) {
+                e.printStackTrace();
             }
+
+            if (hasProbe) {
+                autoCapable.add(name);
+                log("玩家 " + name + " 已安装同步组件（通道探针可见），下发清单。");
+                sendManifest(player);
+                return;
+            }
+
+            // 慢路径：客户端可能稍后才发"报到"，等 2 秒（40 tick）再判定，避免误报"没有组件"
+            pendingCheck.put(name, 40);
         });
+    }
+
+    /** 等待判定「到底有没有组件」的玩家 → 剩余 tick 数。 */
+    private static final Map<String, Integer> pendingCheck = new ConcurrentHashMap<>();
+
+    /** 每 tick 递减；到 0 时若仍没等到组件的报到，就提示玩家。 */
+    private static void tickChecks() {
+        if (pendingCheck.isEmpty()) return;
+        List<String> expired = new ArrayList<>();
+        pendingCheck.replaceAll((name, left) -> {
+            int n = left - 1;
+            if (n <= 0) expired.add(name);
+            return n <= 0 ? 0 : n;
+        });
+        for (String name : expired) {
+            pendingCheck.remove(name);
+            if (autoCapable.contains(name)) continue;   // 期间收到报到了
+            log("玩家 " + name + " 没有同步组件，无法自动同步。");
+            ServerPlayer p = playerByName(name);
+            if (p == null) continue;
+            if (Config.INSTANCE.kickOnMissing) {
+                p.connection.disconnect(net.minecraft.network.chat.Component.literal(Config.INSTANCE.kickMessage));
+            } else {
+                sendNotice(p);
+            }
+        }
+    }
+
+    private static final Map<String, ServerPlayer> onlinePlayers = new ConcurrentHashMap<>();
+
+    private static ServerPlayer playerByName(String name) {
+        return onlinePlayers.get(name);
     }
 
     // ───────────────────────── 1. 认人 ─────────────────────────
 
-    private static void onConfigure(ServerConfigurationPacketListenerImpl listener,
-                                    net.minecraft.server.MinecraftServer server) {
-        String name;
-        try {
-            name = listener.getOwner().name();
-        } catch (Exception e) {
-            name = "?";
+    /** 客户端组件报到：它能自动收，立刻下发清单。 */
+    private static void onClientReady(ServerPlayer player) {
+        String name = player.getGameProfile().name();
+        if (autoCapable.add(name)) {
+            log("玩家 " + name + " 已报到（具备自动同步能力），下发清单。");
         }
-
-        boolean canAuto;
-        try {
-            Set<Identifier> channels = ServerConfigurationNetworking.getReceived(listener);
-            canAuto = channels != null && channels.contains(PROBE_CHANNEL);
-        } catch (Exception e) {
-            e.printStackTrace();
-            canAuto = false;
-        }
-
-        if (canAuto) {
-            autoCapable.add(name);
-            log("玩家 " + name + " 已安装同步组件，全程自动同步。");
-            return;
-        }
-
-        log("玩家 " + name + " 无法自动同步（没有同步组件，或不是 Fabric 客户端）。");
-        if (Config.INSTANCE.kickOnMissing) {
-            listener.disconnect(Component.literal(Config.INSTANCE.kickMessage));
-        } else {
-            pendingNotice.add(name);
-        }
+        sendManifest(player);
     }
 
     // ───────────────────────── 2. 下清单 ─────────────────────────
