@@ -3,11 +3,11 @@
   "id": "modsync",
   "version": "${version}",
   "name": "ModSync",
-  "description": "服务端→客户端 mod 自动同步：加入时比对，不一致则经游戏连接(25565/内网穿透)推送整合包，客户端自动安装并重启。",
+  "description": "Server-side only mod check: detects if the client has the required mods (via a probe channel during configuration) and prompts or kicks players who don't. Clients install nothing.",
   "authors": ["CCief"],
   "contact": {},
   "license": "MIT",
-  "environment": "*",
+  "environment": "server",
   "entrypoints": {
     "main": ["modsync.ModSync"]
   },

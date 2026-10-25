@@ -2,81 +2,77 @@
 
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-green)
 ![Fabric Loader](https://img.shields.io/badge/Fabric_Loader-0.19.5-blue)
-![Environment](https://img.shields.io/badge/Environment-server%20%2B%20client-orange)
+![Environment](https://img.shields.io/badge/Environment-server--only-red)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 [English](README.md) | [简体中文](README_CN.md)
 
-**Server-authoritative mod synchronization for Minecraft Fabric.**
+**Server-side-only mod check for Minecraft Fabric. Players install nothing.**
 
-Drop a mod into the server's `mods/` folder and forget about it. When a player joins, ModSync
-compares their mod set against the server's, pushes whatever is missing or outdated **straight
-through the game connection**, installs it client-side, and restarts the game so they can rejoin —
-no manual downloads, no shared drive, no third-party launcher integration.
+ModSync lives on the server. When a player joins, the server inspects what the client's
+mod set actually looks like and — if something required is missing — either shows them a
+download link in chat or kicks them with an explanatory message. No client-side install, no
+auto-transfer, no restarts.
 
-> Works behind **frp / NAT / intranet penetration** out of the box. ModSync never opens a new
-> port: it rides the existing Minecraft connection (`server-port=25565`). If players can join
-> your server, they can receive mods. This also holds for **self-made / private mods** — they are
-> transferred the same way, so nothing needs to be published anywhere.
-
----
-
-## Features
-
-- **One jar, both sides.** A single artifact declares `environment: "*"` and branches on
-  `EnvType` at runtime — install the same file on server and client.
-- **Content-addressed.** Every mod is identified by `sha256`, so a changed file is detected even
-  if its name stayed the same.
-- **Server-only exclusion.** Pure server mods (Carpet, Lithium, …) are listed in config and never
-  pushed to clients.
-- **Chunked transport.** Payloads are split into ~30 KB chunks, well under Minecraft's custom
-  payload limit.
-- **Integrity verified.** Each file is re-hashed after transfer; only a matching `sha256` is
-  promoted from the staging folder into `mods/`.
-- **Restart & rejoin.** After a successful sync the client restarts and reconnects
-  automatically (best-effort; see [Caveats](#caveats)).
-- **No-op when in sync.** If the client already matches, ModSync just lets them in — no transfer,
-  no restart.
+> Works identically behind **frp / NAT / intranet penetration** and with **self-made mods**:
+> what it points to is just a URL — a web page, a netdisk share, an HTTP file, anything.
+> Nothing needs to be published to CurseForge or Modrinth.
 
 ---
 
 ## How it works
 
-Five custom payloads carry the whole protocol, all over the vanilla connection:
+Minecraft's login has a **configuration phase** where client and server negotiate which
+custom payload channels they understand. Fabric's networking layer exposes exactly that to
+mods: `ServerConfigurationNetworking.getReceived(listener)` returns the set of channels the
+client registered.
 
-| # | Direction | Payload | Purpose |
-|---|---|---|---|
-| 1 | S2C | `ManifestChunk` | Gzipped manifest `[{name, sha256, size}]`, split into chunks |
-| 2 | C2S | `ModRequest` | Gzipped JSON list of mods the client actually needs |
-| 3 | S2C | `FileMeta` | Name, size and `sha256` of the file about to be sent |
-| 4 | S2C | `FileChunk` | Raw file bytes, chunk `index` / `total` |
-| 5 | S2C | `FileEnd` | End-of-file marker carrying the expected `sha256` |
+ModSync uses that as its probe:
 
-```
- Player joins
+- `fabric:registry/sync` is registered by every client that has **fabric-api** → tells the
+  server "this is a Fabric client, not vanilla".
+- Each mod that registers a channel of its own (e.g. `carpet:carpet`) shows up in the same
+  set → the server can tell whether that specific mod is installed.
+
+If the required set isn't satisfied, the server either kicks the player (with a message
+listing what's missing) or lets them in and posts a chat notice with your download URL.
+
+```text
+ player joins
      │
      ▼
- Server scans mods/  ──(minus serverOnly)──►  ManifestChunk × N
+ configuration phase ── channel negotiation ──►  client's registered channels
      │
-     ▼
- Client compares against local mods/ by sha256
+     ├─ fabric:registry/sync present?  ── no ──► missing "fabric-api"
+     └─ each requiredChannels entry present? ── no ──► missing that channel
      │
-     ├── in sync ──────────────►  let them in, nothing else happens
+     ├── all satisfied ──►  let them in
      │
-     └── drift ──►  ModRequest (list of needed mods)
-                        │
-                        ▼
-              FileMeta → FileChunk × N → FileEnd   (per mod)
-                        │
-                        ▼
-              staged in .modsync_pending/ , sha256 verified
-                        │
-                        ▼
-              moved into mods/  →  restart  →  auto-rejoin
+     └── something missing ──►  kickOnMissing?
+                                ├── true  ──►  disconnect (message lists what's missing)
+                                └── false ──►  chat notice (+ checkUrl) right after spawn
 ```
 
-> ModSync only **adds and updates**. It deliberately never deletes client mods that the server
-> doesn't have, to avoid destroying someone's singleplayer setup.
+### What it checks — and what it can't
+
+The probe inspects **observable features of the client** (registered channels), not the client's
+file system. A server-only mod has no way to enumerate a client's `mods/` folder: Fabric
+provides no protocol that reports a client's mod list to the server, so a per-file `sha256`
+diff is impossible without client-side code.
+
+So the trade-off is explicit:
+
+| | v0.2.0 (server-only) | v0.1.0 (two-sided) |
+|---|---|---|
+| Client install | none | ModSync jar required |
+| Detection | channel / feature based | per-file `sha256` diff |
+| Delivery | link in chat | bytes pushed over the game connection |
+| Restart | player restarts manually | mod tries to auto-restart |
+| Works with a vanilla client | yes (detected as "no fabric-api") | no |
+
+If you need byte-exact enforcement, use v0.1.0 with the client jar — but then the client
+needs a restart-capable launcher, and mods that register no channel can't be verified either
+way.
 
 ---
 
@@ -84,12 +80,11 @@ Five custom payloads carry the whole protocol, all over the vanilla connection:
 
 Requirements: **Minecraft 26.3**, **Fabric Loader ≥ 0.19.5**, **fabric-api** (any version).
 
-1. **Server** — put `modsync-<version>.jar` into your server's `mods/` folder.
-2. **Client** — every player puts the same jar into `.minecraft/mods/`, together with a matching
-   `fabric-api` jar. This is the only manual step, and it happens once.
-3. Start the server once so `config/modsync.json` is generated, then list your server-only mods
-   (see [Configuration](#configuration)).
-4. Restart the server. Players are aligned automatically from then on.
+1. Put `modsync-<version>.jar` into the **server's** `mods/` folder. That's it — the client
+   side needs nothing.
+2. Start the server once so `config/modsync.json` is generated.
+3. Edit the config: set your download URL, and list the channels clients must have.
+4. Restart the server.
 
 ---
 
@@ -99,25 +94,36 @@ Generated at `config/modsync.json` on first launch:
 
 ```json
 {
-  "serverOnly": [],
-  "chunkSize": 30720,
-  "autoRestart": true
+  "checkUrl": "",
+  "kickOnMissing": false,
+  "kickMessage": "你的客户端缺少服务端要求的 mod，请先安装后再进入。详情见服务器公告。",
+  "requireFabric": true,
+  "requiredChannels": []
 }
 ```
 
 | Key | Default | Meaning |
 |---|---|---|
-| `serverOnly` | `[]` | File names of server-only mods that must **not** be pushed to clients |
-| `chunkSize` | `30720` | Bytes per network chunk (30 KB) |
-| `autoRestart` | `true` | Attempt to restart the client after a successful sync |
+| `checkUrl` | `""` | URL shown in the chat notice (modpack page, netdisk link, anything) |
+| `kickOnMissing` | `false` | `true` = disconnect players missing required mods; `false` = allow in but show the notice |
+| `kickMessage` | *(Chinese text)* | Message shown when kicking (supports `§` color codes) |
+| `requireFabric` | `true` | Require a Fabric client with fabric-api (detected via `fabric:registry/sync`) |
+| `requiredChannels` | `[]` | Channels the client must have registered; each missing one is reported as a missing mod |
 
-Example — keeping performance mods on the server only:
+Example — require Carpet and a fabric-api based mod:
 
 ```json
 {
-  "serverOnly": ["fabric-carpet-1.21.1.jar", "lithium-fabric-mc1.21.1-0.14.1.jar"]
+  "checkUrl": "https://your-site.example/mods",
+  "kickOnMissing": true,
+  "requireFabric": true,
+  "requiredChannels": ["carpet:carpet", "yourmod:network"]
 }
 ```
+
+> A mod that registers **no** network channel cannot be detected by any server-side method.
+> For those, keep them in the modpack and rely on the download link, or ship a tiny optional
+> client component (future roadmap item).
 
 ---
 
@@ -140,43 +146,43 @@ Toolchain is pinned in `gradle.properties`: **Loom 1.17.19**, **JDK 25**, **Grad
 
 ```
 src/main/java/modsync/
-├─ ModSync.java      # entrypoint: registers payload codecs, branches on EnvType
-├─ ModPayloads.java  # the five CustomPacketPayload records + codecs
-├─ ServerSync.java   # server side: send manifest on join, serve requested files
-├─ ClientSync.java   # client side: compare, request, stage, install
-├─ Config.java       # config/modsync.json
-├─ Util.java         # sha256 / gzip helpers
-└─ Restart.java      # best-effort client self-restart
+├─ ModSync.java      # entrypoint
+├─ ServerSync.java   # channel probe (CONFIGURE) + chat notice (JOIN) / kick
+└─ Config.java       # config/modsync.json
 ```
 
----
-
-## Status
-
-| Item | State |
-|---|---|
-| Source (7 files) | Done |
-| Compile check (JDK 25, mojmap) | Passing |
-| Runnable jar | `modsync-0.1.0.jar` |
-| Real-world testing | In progress |
+Three source files. That's the whole mod.
 
 ---
 
-## Caveats
+## Changelog
 
-- The **first** player to join after a mod change pulls every changed mod through your tunnel.
-  On a slow uplink this takes a while; later joins only transfer the delta.
-- Auto-restart works with MultiMC / Prism / plain `java -jar`. With the **official launcher** the
-  restart may not fire — the mods are already installed, so a manual restart is enough.
+### v0.2.0 — server-only rewrite
+
+- **Breaking:** the mod no longer runs on clients at all (`environment: "server"`). Clients
+  install nothing and need nothing.
+- Replaced the v0.1.0 auto-transfer (manifest → request → chunked push → auto-restart) with a
+  channel probe plus notice/kick. The transfer design required client-side code to receive
+  and install files, which contradicts "server-only".
+- Detection now uses the client's registered network channels
+  (`ServerConfigurationNetworking.getReceived`) — `fabric:registry/sync` identifies Fabric
+  clients, and `requiredChannels` entries identify individual mods.
+- New config: `checkUrl`, `kickOnMissing`, `kickMessage`, `requireFabric`, `requiredChannels`.
+
+### v0.1.0 — initial release (deprecated design)
+
+- Two-sided auto-sync: the server pushed missing mods through the game connection and the
+  client installed them and tried to restart. Works, but the auto-restart only succeeds on
+  launchers that allow a child process to relaunch the game (MultiMC / Prism / plain
+  `java -jar`); with launchers such as PCL the client exits without coming back.
 
 ---
 
 ## Roadmap
 
-- [ ] Transfer progress UI (currently chat messages)
-- [ ] HTTP mirror mode for large packs (server sends a URL instead of bytes)
-- [ ] Optional `pruneExtra` to remove client mods absent from the server
-- [ ] Reliable restart for the official launcher
+- [ ] Optional tiny client component for byte-exact `sha256` verification
+- [ ] Per-registry detection via Fabric's registry sync (catches mods without channels)
+- [ ] Fully localized notice/kick messages from config
 - [ ] Support for more Minecraft versions and other loaders
 
 ---

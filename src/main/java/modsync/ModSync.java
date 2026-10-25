@@ -1,17 +1,16 @@
 package modsync;
 
-import net.fabricmc.api.EnvType;
 import net.fabricmc.api.ModInitializer;
-import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
-import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.server.network.ServerGamePacketListenerImpl;
 
 /**
- * ModSync 通用入口（服务端/客户端都跑，按 EnvType 分流）。
- * 在通用入口注册全部 payload 编解码（双向），保证任一端都能编/解码。
+ * ModSync 入口（仅服务端）。
+ *
+ * 客户端无需安装任何东西。工作方式：
+ *  - 每个装有 ModSync 的服务端在 CONFIGURE 阶段通过 fabric 网络层的通道协商，
+ *    探测客户端是否也装有 ModSync（识别标记 channel modsync:probe）。
+ *  - 装了  → 视为「同版本客户端」，直接放行。
+ *  - 没装  → 按 config 决定：发聊天栏提示（含下载地址）或直接踢出。
+ * 自制 mod / 内网穿透与此无关：下载链接是普通 URL，什么环境都能用。
  */
 public class ModSync implements ModInitializer {
     public static final String MOD_ID = "modsync";
@@ -19,27 +18,6 @@ public class ModSync implements ModInitializer {
     @Override
     public void onInitialize() {
         Config.load();
-
-        // 双向编解码注册（两端的 common init 都会执行，各自具备编码与解码能力）
-        PayloadTypeRegistry.clientboundPlay().register(ModPayloads.ManifestChunk.TYPE, ModPayloads.ManifestChunk.CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(ModPayloads.FileMeta.TYPE, ModPayloads.FileMeta.CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(ModPayloads.FileChunk.TYPE, ModPayloads.FileChunk.CODEC);
-        PayloadTypeRegistry.clientboundPlay().register(ModPayloads.FileEnd.TYPE, ModPayloads.FileEnd.CODEC);
-        PayloadTypeRegistry.serverboundPlay().register(ModPayloads.ModRequest.TYPE, ModPayloads.ModRequest.CODEC);
-
-        if (FabricLoader.getInstance().getEnvironmentType() == EnvType.SERVER) {
-            // 客户端请求差异 mod 列表
-            ServerPlayNetworking.registerGlobalReceiver(ModPayloads.ModRequest.TYPE, (payload, ctx) ->
-                    ctx.server().execute(() -> ServerSync.handleRequest(ctx.player(), payload)));
-            // 玩家加入即下发服务端 mod 清单
-            ServerPlayConnectionEvents.JOIN.register((ServerGamePacketListenerImpl handler,
-                                                      net.fabricmc.fabric.api.networking.v1.PacketSender sender,
-                                                      net.minecraft.server.MinecraftServer server) -> {
-                ServerPlayer player = handler.getPlayer();
-                ServerSync.sendManifest(player);
-            });
-        } else {
-            ClientSync.init();
-        }
+        ServerSync.init();
     }
 }
