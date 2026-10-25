@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "modsync-client",
+  "version": "${version}",
+  "name": "ModSync Client",
+  "description": "Companion component for ModSync. Receives the server's authoritative mod list, downloads missing mods over the game connection, verifies them, installs them and restarts the game automatically. Install this next to any modpack the server requires.",
+  "authors": ["CCief"],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["modsync.client.ModSyncClient"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": ">=26.3",
+    "fabric-api": "*"
+  },
+  "mixins": []
+}

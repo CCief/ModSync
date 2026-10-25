@@ -1,4 +1,4 @@
-package modsync;
+package modsync.server;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -12,20 +12,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 配置：config/modsync.json（首次启动自动生成）。仅服务端运行。
+ * 服务端配置：config/modsync.json（首次启动自动生成）。
  *
- * checkUrl         : 提示玩家去哪里下载完整整合包（网页/网盘/HTTP 任意链接）。
- * kickOnMissing    : 检测到缺失时是否直接踢出（false = 只发聊天提示，允许进入）。
- * kickMessage      : 踢出时显示的文案。
- * requireFabric    : 是否要求客户端是装了 fabric-api 的 Fabric 客户端
- *                    （依据客户端注册的 fabric:registry/sync 通道判定）。
- * requiredChannels : 客户端必须注册的通道列表（每个 mod 一个，如 "carpet:carpet"）。
- *                    通道缺失 = 该 mod 未安装。
+ * serverOnly      : 仅服务端运行的 mod 文件名，不下发给客户端（如 carpet、lithium）。
+ * chunkSize       : 单个网络包字节数（默认 30KB，远小于 MC 自定义载荷上限）。
+ * checkUrl        : 客户端没装 modsync-client 时，提示去哪里下载整合包。
+ * kickOnMissing   : 客户端没装 modsync-client 时是否直接踢出。
+ * kickMessage     : 踢出文案。
+ * requireFabric   : 要求客户端是装了 fabric-api 的 Fabric 客户端。
+ * requiredChannels: 客户端必须注册的通道（额外校验用，缺一个即视为少对应 mod）。
  */
 public class Config {
+    public List<String> serverOnly = new ArrayList<>();
+    public int chunkSize = 30720;
     public String checkUrl = "";
     public boolean kickOnMissing = false;
-    public String kickMessage = "你的客户端缺少服务端要求的 mod，请先安装后再进入。详情见服务器公告。";
+    public String kickMessage = "你的客户端缺少同步组件，无法自动获取服务器 mod。请安装整合包后重试。";
     public boolean requireFabric = true;
     public List<String> requiredChannels = new ArrayList<>();
 
@@ -37,9 +39,7 @@ public class Config {
             try {
                 Config loaded = new Gson().fromJson(
                         new String(Files.readAllBytes(p), StandardCharsets.UTF_8), Config.class);
-                if (loaded != null) {
-                    INSTANCE = loaded;
-                }
+                if (loaded != null) INSTANCE = loaded;
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -52,8 +52,8 @@ public class Config {
                 e.printStackTrace();
             }
         }
-        if (INSTANCE.requiredChannels == null) {
-            INSTANCE.requiredChannels = new ArrayList<>();
-        }
+        if (INSTANCE.serverOnly == null) INSTANCE.serverOnly = new ArrayList<>();
+        if (INSTANCE.requiredChannels == null) INSTANCE.requiredChannels = new ArrayList<>();
+        if (INSTANCE.chunkSize <= 0) INSTANCE.chunkSize = 30720;
     }
 }

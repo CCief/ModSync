@@ -3,13 +3,13 @@
   "id": "modsync",
   "version": "${version}",
   "name": "ModSync",
-  "description": "Server-side only mod check: detects if the client has the required mods (via a probe channel during configuration) and prompts or kicks players who don't. Clients install nothing.",
+  "description": "Server-authoritative mod sync. The server keeps the authoritative mod list and pushes missing mods to clients over the game connection. Server side only; pair it with modsync-client on players' machines for fully automatic delivery.",
   "authors": ["CCief"],
   "contact": {},
   "license": "MIT",
   "environment": "server",
   "entrypoints": {
-    "main": ["modsync.ModSync"]
+    "main": ["modsync.server.ModSyncServer"]
   },
   "depends": {
     "fabricloader": ">=0.19.5",

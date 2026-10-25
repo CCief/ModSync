@@ -7,3 +7,7 @@ pluginManagement {
 }
 
 rootProject.name = 'modsync'
+
+include 'common'
+include 'server'
+include 'client'
